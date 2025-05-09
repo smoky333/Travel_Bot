@@ -6,7 +6,79 @@ from aiogram.fsm.context import FSMContext
 from handlers.trip_planning_states import TripPlanning  # Импортируем наши состояния
 from utils.ai_integration import get_travel_recommendations
 
-# Создаем новый роутер специально для логики планирования поездки
+
+# ==============================================================================
+# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ФОРМАТИРОВАНИЯ РЕКОМЕНДАЦИИ
+# ==============================================================================
+async def _format_recommendation_text(recommendation: dict) -> str:  # Оставим async для гибкости
+    """
+    Формирует красивый текстовый блок для одной рекомендации.
+    """
+    rec_type_map = {
+        "route": "🗺️ Маршрут", "transport_option": "🚌 Транспорт", "hotel": "🏨 Отель",
+        "museum": "🏛️ Музей", "restaurant": "🍽️ Ресторан", "event": "🎉 Событие",
+        "activity": "🤸 Активность"
+    }
+    rec_type_emoji = rec_type_map.get(recommendation.get("type", "unknown"), "⭐")
+
+    text_parts = [
+        f"<b>{rec_type_emoji}: {recommendation.get('name', 'Без названия')}</b>"
+    ]
+
+    if recommendation.get('address'):
+        text_parts.append(f"📍 <b>Адрес:</b> {recommendation.get('address')}")
+
+    if recommendation.get('description'):
+        text_parts.append(f"📝 <i>{recommendation.get('description')}</i>")
+
+    details = recommendation.get("details")
+    if details and isinstance(details, dict):
+        detail_str_parts = []
+        if recommendation.get("type") == "route" and details.get("route_type"):
+            detail_str_parts.append(f"Тип маршрута: {details['route_type']}")
+        if recommendation.get("type") == "route" and details.get("stops"):
+            stops_str = ", ".join([s.get('name', 'Остановка') for s in details['stops'][:3]])
+            if len(details['stops']) > 3:
+                stops_str += " и др."
+            detail_str_parts.append(f"Остановки: {stops_str}")
+        if recommendation.get("type") == "hotel" and details.get("stars"):
+            stars_text = '⭐' * int(details['stars']) if isinstance(details.get('stars'), (int, float)) and details[
+                'stars'] > 0 else str(details['stars'])
+            detail_str_parts.append(f"{stars_text} ({details['stars']} звезд)")
+        if recommendation.get("type") == "hotel" and details.get("amenities"):
+            amenities_str = ", ".join(details['amenities'][:3])
+            if len(details['amenities']) > 3:
+                amenities_str += " и др."
+            detail_str_parts.append(f"Удобства: {amenities_str}")
+        if recommendation.get("type") == "restaurant" and details.get("cuisine_type"):
+            cuisine_str = ", ".join(details['cuisine_type']) if isinstance(details['cuisine_type'], list) else details[
+                'cuisine_type']
+            detail_str_parts.append(f"Кухня: {cuisine_str}")
+        if recommendation.get("type") == "restaurant" and details.get("average_bill"):
+            detail_str_parts.append(f"Средний чек: {details['average_bill']}")
+        if recommendation.get("type") == "event" and details.get("event_dates"):
+            dates_str = " - ".join(details['event_dates']) if isinstance(details['event_dates'], list) else details[
+                'event_dates']
+            detail_str_parts.append(f"Даты проведения: {dates_str}")
+
+        if detail_str_parts:
+            text_parts.append("\n<b>Детали:</b>\n" + "\n".join([f"  - {d}" for d in detail_str_parts]))
+
+    if recommendation.get('distance_or_time'):
+        text_parts.append(f"🚗/🚶 <b>Расстояние/Время:</b> {recommendation.get('distance_or_time')}")
+    if recommendation.get('price_estimate'):
+        text_parts.append(f"💰 <b>Цена:</b> {recommendation.get('price_estimate')}")
+    if recommendation.get('rating'):
+        text_parts.append(f"🌟 <b>Рейтинг:</b> {recommendation.get('rating')}/5")
+    if recommendation.get('opening_hours'):
+        text_parts.append(f"⏰ <b>Часы работы:</b> {recommendation.get('opening_hours')}")
+
+    return "\n\n".join(text_parts)
+
+
+# ==============================================================================
+# ОСНОВНОЙ РОУТЕР ДЛЯ ПЛАНИРОВАНИЯ ПОЕЗДКИ
+# ==============================================================================
 trip_planning_router = Router(name="trip_planning_router")
 
 
@@ -18,9 +90,8 @@ async def cmd_plan_trip(message: Message, state: FSMContext):
         "<b>Шаг 1: Пункт назначения</b>\n"
         "📍 Пожалуйста, напишите город или страну, куда вы хотите поехать. "
         "Или, если вы уже там, можете отправить свою текущую геолокацию (нажав на скрепку 📎 и выбрав 'Геопозиция').",
-        reply_markup=ReplyKeyboardRemove()  # Убираем любые предыдущие обычные клавиатуры (если были)
+        reply_markup=ReplyKeyboardRemove()
     )
-    # Переводим пользователя в состояние "ожидания локации"
     await state.set_state(TripPlanning.waiting_for_location)
     print(f"Пользователь {message.from_user.id} начал планирование. Переведен в состояние waiting_for_location.")
 
@@ -28,37 +99,29 @@ async def cmd_plan_trip(message: Message, state: FSMContext):
 # Обработчик для получения ответа на вопрос о локации (текстовый ввод)
 @trip_planning_router.message(TripPlanning.waiting_for_location, F.text)
 async def process_location_text(message: Message, state: FSMContext):
-    # Сохраняем введенную локацию в "память" FSM для этого пользователя
     await state.update_data(user_location_text=message.text.strip())
-
     user_data = await state.get_data()
     print(f"Данные от пользователя {message.from_user.id} после ввода локации: {user_data}")
 
-    # Задаем следующий вопрос про интересы
     await message.answer(
         f"Принято! Вы указали: {message.text}.\n\n"
         "<b>Шаг 2: Ваши интересы</b> 🎨🏞️🏛️🛍️\n"
         "Напишите, пожалуйста, через запятую, что вас больше всего интересует в поездке. Например: "
         "<i>архитектура, природа, гастрономия, шопинг, история, искусство, ночная жизнь, семейный отдых</i>."
     )
-    # Переводим пользователя в состояние "ожидания интересов"
     await state.set_state(TripPlanning.waiting_for_interests)
     print(f"Пользователь {message.from_user.id} переведен в состояние waiting_for_interests.")
 
 
 # TODO: Добавить обработчик для геолокации (message: ContentType.LOCATION) в состоянии waiting_for_location
 
-
 # Обработчик для получения ответа на вопрос об интересах
 @trip_planning_router.message(TripPlanning.waiting_for_interests, F.text)
 async def process_interests(message: Message, state: FSMContext):
-    # Сохраняем интересы.
     await state.update_data(user_interests_text=message.text.strip())
-
     user_data = await state.get_data()
     print(f"Данные от пользователя {message.from_user.id} после ввода интересов: {user_data}")
 
-    # Создаем клавиатуру с вариантами бюджета
     budget_buttons = [
         [InlineKeyboardButton(text="💰 Эконом (Low)", callback_data="budget_low")],
         [InlineKeyboardButton(text="💰💰 Средний (Mid)", callback_data="budget_mid")],
@@ -66,14 +129,12 @@ async def process_interests(message: Message, state: FSMContext):
     ]
     budget_keyboard = InlineKeyboardMarkup(inline_keyboard=budget_buttons)
 
-    # Задаем следующий вопрос про бюджет
     await message.answer(
         f"Отлично! Ваши интересы: {message.text}.\n\n"
         "<b>Шаг 3: Ваш бюджет</b> 💳\n"
         "Пожалуйста, выберите предполагаемый уровень расходов на поездку:",
-        reply_markup=budget_keyboard  # Прикрепляем нашу клавиатуру с кнопками
+        reply_markup=budget_keyboard
     )
-    # Переводим пользователя в состояние "ожидания бюджета"
     await state.set_state(TripPlanning.waiting_for_budget)
     print(f"Пользователь {message.from_user.id} переведен в состояние waiting_for_budget.")
 
@@ -82,13 +143,10 @@ async def process_interests(message: Message, state: FSMContext):
 @trip_planning_router.callback_query(TripPlanning.waiting_for_budget, F.data.startswith("budget_"))
 async def process_budget_callback(callback_query: CallbackQuery, state: FSMContext):
     selected_budget = callback_query.data.split("_")[1]
-
     await state.update_data(user_budget=selected_budget)
-
-    user_data_budget = await state.get_data()  # Переименовал, чтобы не конфликтовало с user_data выше если скопипастить
+    user_data_budget = await state.get_data()
     print(f"Данные от пользователя {callback_query.from_user.id} после выбора бюджета: {user_data_budget}")
 
-    # Редактируем сообщение, чтобы показать выбранный бюджет и задать следующий вопрос
     await callback_query.message.edit_text(
         f"Бюджет выбран: {selected_budget.capitalize()}.\n\n"
         "<b>Шаг 4: Даты поездки</b> 📅\n"
@@ -97,8 +155,6 @@ async def process_budget_callback(callback_query: CallbackQuery, state: FSMConte
         "Если точных дат нет, можно указать примерную продолжительность, например, <i>неделя в июле</i> или <i>3 дня</i>."
     )
     await callback_query.answer(text=f"Бюджет: {selected_budget.capitalize()}", show_alert=False)
-
-    # Переводим пользователя в состояние "ожидания дат поездки"
     await state.set_state(TripPlanning.waiting_for_trip_dates)
     print(f"Пользователь {callback_query.from_user.id} переведен в состояние waiting_for_trip_dates.")
 
@@ -106,10 +162,8 @@ async def process_budget_callback(callback_query: CallbackQuery, state: FSMConte
 # Обработчик для получения ответа на вопрос о датах поездки
 @trip_planning_router.message(TripPlanning.waiting_for_trip_dates, F.text)
 async def process_trip_dates(message: Message, state: FSMContext):
-    # Сохраняем введенные даты (пока как текст, валидацию можно добавить позже)
     await state.update_data(user_trip_dates_text=message.text.strip())
-
-    user_data_dates = await state.get_data()  # Переименовал
+    user_data_dates = await state.get_data()
     print(f"Данные от пользователя {message.from_user.id} после ввода дат: {user_data_dates}")
 
     await message.answer(
@@ -118,16 +172,14 @@ async def process_trip_dates(message: Message, state: FSMContext):
         "Напишите, пожалуйста, через запятую, какие виды транспорта вы предпочитаете использовать в поездке. "
         "Например: <i>пешком, автомобиль, общественный транспорт, велосипед, такси</i>."
     )
-    # Переводим пользователя в состояние "ожидания предпочтений по транспорту"
     await state.set_state(TripPlanning.waiting_for_transport_prefs)
     print(f"Пользователь {message.from_user.id} переведен в состояние waiting_for_transport_prefs.")
 
 
 # Обработчик для получения ответа на вопрос о предпочтениях по транспорту
 @trip_planning_router.message(TripPlanning.waiting_for_transport_prefs, F.text)
-async def process_transport_prefs(message: Message, state: FSMContext, bot: Bot):  # <--- Добавили bot сюда
+async def process_transport_prefs(message: Message, state: FSMContext, bot: Bot):
     await state.update_data(user_transport_prefs_text=message.text.strip())
-
     final_user_data = await state.get_data()
     print(f"Все собранные данные от пользователя {message.from_user.id}: {final_user_data}")
 
@@ -136,44 +188,47 @@ async def process_transport_prefs(message: Message, state: FSMContext, bot: Bot)
         "🎉 <b>Отлично! Вы предоставили всю основную информацию!</b>\n"
         "Подбираю для вас лучшие варианты... Это может занять несколько секунд ✨"
     )
-
-    # Очищаем состояние FSM ДО вызова AI, чтобы пользователь не мог случайно что-то сломать
     await state.clear()
-    # Если хочешь сохранить данные где-то еще перед очисткой, сделай это здесь
 
-    # Вызываем нашу функцию (пока что заглушку) для получения рекомендаций
     recommendations_json, accompanying_text = await get_travel_recommendations(final_user_data)
 
     if recommendations_json and accompanying_text:
-        # Сначала отправляем текстовое сопровождение
         await message.answer(accompanying_text)
 
-        # Затем отправляем каждую рекомендацию
-        # TODO: Создать отдельную функцию для красивого форматирования и отправки одной рекомендации
         if "recommendations" in recommendations_json:
             for rec in recommendations_json["recommendations"]:
-                # Пока что очень простое отображение, потом сделаем красивее
-                rec_text = f"<b>Тип:</b> {rec.get('type')}\n" \
-                           f"<b>Название:</b> {rec.get('name')}\n" \
-                           f"<b>Описание:</b> {rec.get('description')}"
+                formatted_text = await _format_recommendation_text(rec)  # Вызов нашей функции
+
+                buttons = []
+                if rec.get('booking_link'):
+                    buttons.append(InlineKeyboardButton(text="🔗 Бронь/Билеты", url=rec.get('booking_link')))
+
+                coords = rec.get('coordinates')
+                if coords and isinstance(coords, list) and len(coords) == 2:
+                    lat, lon = coords
+                    maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+                    buttons.append(InlineKeyboardButton(text="🗺️ На карте", url=maps_url))
+
+                reply_markup = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
                 images = rec.get("images", [])
                 if images:
                     try:
-                        # Отправляем первое изображение с текстом как caption
-                        await bot.send_photo(chat_id=message.chat.id, photo=images[0], caption=rec_text)
+                        await bot.send_photo(
+                            chat_id=message.chat.id,
+                            photo=images[0],
+                            caption=formatted_text,
+                            reply_markup=reply_markup,
+                            parse_mode="HTML"
+                        )
                     except Exception as e:
                         print(f"Ошибка отправки фото {images[0]}: {e}. Отправляю текстом.")
-                        await message.answer(rec_text)  # Если фото не отправилось, шлем текст
+                        await message.answer(formatted_text, reply_markup=reply_markup, parse_mode="HTML")
                 else:
-                    await message.answer(rec_text)
-
-                # TODO: Добавить кнопки (бронирование, на карте), если есть ссылки/координаты
+                    await message.answer(formatted_text, reply_markup=reply_markup, parse_mode="HTML")
         else:
             await message.answer("В полученном ответе от AI нет раздела 'recommendations'.")
-
     else:
-        # Если функция вернула ошибку (None, текст_ошибки)
         error_text = accompanying_text or "Не удалось получить рекомендации от AI. Попробуйте позже."
         await message.answer(error_text)
 
