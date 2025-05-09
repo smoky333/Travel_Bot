@@ -8,7 +8,7 @@ from aiogram.enums import ParseMode # Чтобы бот понимал крас�
 from dotenv import load_dotenv      # Этот инструмент загрузит наш секретный токен из файла .env
 from aiogram.client.default import DefaultBotProperties # Этот инструмент позволит боту получать свой ID
 from handlers.user_commands import user_commands_router
-
+from handlers.trip_planning_handlers import trip_planning_router
 
 # Настраиваем "дневник" (логирование), чтобы видеть сообщения от бота в консоли
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +30,7 @@ async def main():
 
     # Подключаем наш новый распределитель команд к главному мозгу бота
     dp.include_router(user_commands_router)
+    dp.include_router(trip_planning_router)
 
 
     # "Бот" будет отправлять и получать сообщения. ParseMode.HTML означает, что мы сможем делать текст жирным, курсивом и т.д.
