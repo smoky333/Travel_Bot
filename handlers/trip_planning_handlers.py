@@ -1,9 +1,10 @@
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.context import FSMContext
 
 from handlers.trip_planning_states import TripPlanning  # Импортируем наши состояния
+from utils.ai_integration import get_travel_recommendations
 
 # Создаем новый роутер специально для логики планирования поездки
 trip_planning_router = Router(name="trip_planning_router")
@@ -124,25 +125,56 @@ async def process_trip_dates(message: Message, state: FSMContext):
 
 # Обработчик для получения ответа на вопрос о предпочтениях по транспорту
 @trip_planning_router.message(TripPlanning.waiting_for_transport_prefs, F.text)
-async def process_transport_prefs(message: Message, state: FSMContext):
+async def process_transport_prefs(message: Message, state: FSMContext, bot: Bot):  # <--- Добавили bot сюда
     await state.update_data(user_transport_prefs_text=message.text.strip())
 
-    # Получаем все накопленные данные перед очисткой
     final_user_data = await state.get_data()
-    print(
-        f"Все собранные данные от пользователя {message.from_user.id}: {final_user_data}")  # Используем final_user_data
+    print(f"Все собранные данные от пользователя {message.from_user.id}: {final_user_data}")
 
     await message.answer(
         f"Предпочтения по транспорту приняты: {message.text}.\n\n"
         "🎉 <b>Отлично! Вы предоставили всю основную информацию!</b>\n"
-        "Теперь я мог бы начать подбирать для вас рекомендации (но эта часть еще в разработке).\n\n"
-        "Спасибо за участие!"
+        "Подбираю для вас лучшие варианты... Это может занять несколько секунд ✨"
     )
 
-    # На этом основной сбор данных завершен. Очищаем состояние.
-    # TODO: Вместо clear() здесь будет вызов функции get_travel_recommendations(final_user_data)
-    # и отображение результата.
-    print(
-        f"Финальные данные для AI (пользователь {message.from_user.id}): {final_user_data}")  # Еще раз выведем для ясности
+    # Очищаем состояние FSM ДО вызова AI, чтобы пользователь не мог случайно что-то сломать
     await state.clear()
-    print(f"Пользователь {message.from_user.id} завершил ввод. Состояние очищено.")
+    # Если хочешь сохранить данные где-то еще перед очисткой, сделай это здесь
+
+    # Вызываем нашу функцию (пока что заглушку) для получения рекомендаций
+    recommendations_json, accompanying_text = await get_travel_recommendations(final_user_data)
+
+    if recommendations_json and accompanying_text:
+        # Сначала отправляем текстовое сопровождение
+        await message.answer(accompanying_text)
+
+        # Затем отправляем каждую рекомендацию
+        # TODO: Создать отдельную функцию для красивого форматирования и отправки одной рекомендации
+        if "recommendations" in recommendations_json:
+            for rec in recommendations_json["recommendations"]:
+                # Пока что очень простое отображение, потом сделаем красивее
+                rec_text = f"<b>Тип:</b> {rec.get('type')}\n" \
+                           f"<b>Название:</b> {rec.get('name')}\n" \
+                           f"<b>Описание:</b> {rec.get('description')}"
+
+                images = rec.get("images", [])
+                if images:
+                    try:
+                        # Отправляем первое изображение с текстом как caption
+                        await bot.send_photo(chat_id=message.chat.id, photo=images[0], caption=rec_text)
+                    except Exception as e:
+                        print(f"Ошибка отправки фото {images[0]}: {e}. Отправляю текстом.")
+                        await message.answer(rec_text)  # Если фото не отправилось, шлем текст
+                else:
+                    await message.answer(rec_text)
+
+                # TODO: Добавить кнопки (бронирование, на карте), если есть ссылки/координаты
+        else:
+            await message.answer("В полученном ответе от AI нет раздела 'recommendations'.")
+
+    else:
+        # Если функция вернула ошибку (None, текст_ошибки)
+        error_text = accompanying_text or "Не удалось получить рекомендации от AI. Попробуйте позже."
+        await message.answer(error_text)
+
+    print(f"Пользователь {message.from_user.id} получил ответ от AI (заглушки). FSM состояние очищено.")
