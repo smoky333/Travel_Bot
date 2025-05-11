@@ -11,6 +11,7 @@ SUPPORTED_LANGUAGES: Dict[str, str] = {
 
 # Словари с переводами
 TRANSLATIONS: Dict[str, Dict[str, str]] = {
+    # --- Тексты для user_commands.py ---
     "welcome_language_selected": {
         "ru": "🇷🇺 Отлично! Выбран русский язык.\nЯ твой персональный Travel Bot.\nГотов помочь спланировать твое лучшее путешествие!\n\nЧтобы начать планирование, используй команду /plan_trip",
         "en": "🇬🇧 Great! English language selected.\nI am your personal Travel Bot.\nReady to help you plan your best trip!\n\nTo start planning, use the /plan_trip command.",
@@ -21,6 +22,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "en": "👋 Hello! Please select your language:",
         "fr": "👋 Bonjour ! Veuillez sélectionner votre langue :"
     },
+    # --- Тексты для trip_planning_handlers.py (FSM) ---
     "start_planning_prompt": {
         "ru": "Отлично! Начнем планирование вашей идеальной поездки. ✨",
         "en": "Great! Let's start planning your perfect trip. ✨",
@@ -89,8 +91,21 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "en": "🎉 <b>Great! You have provided all the basic information!</b>\nFinding the best options for you... This may take a few seconds ✨",
         "fr": "🎉 <b>Parfait ! Vous avez fourni toutes les informations de base !</b>\nRecherche des meilleures options pour vous... Cela peut prendre quelques secondes ✨"
     },
+    # --- Тексты для кнопок и форматирования рекомендаций ---
     "button_book_tickets": {"ru": "🔗 Бронь/Билеты", "en": "🔗 Book/Tickets", "fr": "🔗 Réserver/Billets"},
     "button_on_map": {"ru": "🗺️ На карте", "en": "🗺️ On Map", "fr": "🗺️ Sur la carte"},
+    "button_like": {"ru": "Нравится", "en": "Like", "fr": "J'aime"},  # <--- ДОБАВЛЕНО
+    "button_dislike": {"ru": "Не нравится", "en": "Dislike", "fr": "Je n'aime pas"},  # <--- ДОБАВЛЕНО
+    "feedback_thanks_like": {  # <--- ДОБАВЛЕНО
+        "ru": "Спасибо, ваш голос учтен!",
+        "en": "Thanks, your feedback is saved!",
+        "fr": "Merci, votre avis est enregistré !"
+    },
+    "feedback_thanks_dislike": {  # <--- ДОБАВЛЕНО
+        "ru": "Понятно, спасибо за отзыв.",
+        "en": "Got it, thanks for your feedback.",
+        "fr": "Compris, merci pour votre avis."
+    },
     "text_no_name": {"ru": "Без названия", "en": "No Name", "fr": "Sans Nom"},
     "text_address": {"ru": "Адрес", "en": "Address", "fr": "Adresse"},
     "text_details_header": {"ru": "Детали", "en": "Details", "fr": "Détails"},
@@ -100,7 +115,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "text_and_more": {"ru": "и др.", "en": "and more", "fr": "et plus"},
     "detail_hotel_stars": {"ru": "Звезд", "en": "Stars", "fr": "Étoiles"},
     "detail_hotel_stars_suffix": {"ru": "звезд(ы)", "en": "stars", "fr": "étoiles"},
-    # Для примера с count, если будешь делать
     "detail_hotel_amenities": {"ru": "Удобства", "en": "Amenities", "fr": "Équipements"},
     "detail_restaurant_cuisine": {"ru": "Кухня", "en": "Cuisine", "fr": "Cuisine"},
     "detail_restaurant_avg_bill": {"ru": "Средний чек", "en": "Average Bill", "fr": "Note Moyenne"},
@@ -110,6 +124,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "text_price": {"ru": "Цена", "en": "Price", "fr": "Prix"},
     "text_rating": {"ru": "Рейтинг", "en": "Rating", "fr": "Évaluation"},
     "text_opening_hours": {"ru": "Часы работы", "en": "Opening Hours", "fr": "Horaires d'ouverture"},
+    # --- Сообщения об ошибках ---
     "ai_response_error_text": {
         "ru": "К сожалению, не удалось получить рекомендации от AI. Попробуйте позже.",
         "en": "Sorry, couldn't get recommendations from AI. Please try again later.",
@@ -152,7 +167,7 @@ def get_text(key: str, lang_code: Optional[str] = None, **kwargs: Any) -> str:
     if translation_dict:
         text_template = translation_dict.get(effective_lang_code)
         if not text_template:
-            text_template = translation_dict.get(DEFAULT_LANGUAGE)  # Фоллбэк на язык по умолчанию
+            text_template = translation_dict.get(DEFAULT_LANGUAGE)
 
         if text_template:
             try:
@@ -160,9 +175,8 @@ def get_text(key: str, lang_code: Optional[str] = None, **kwargs: Any) -> str:
             except KeyError as e:
                 logging.error(
                     f"Localization: Отсутствует ключ форматирования '{e}' для текста '{key}' на языке '{effective_lang_code}'. Шаблон: '{text_template}'")
-                return text_template  # Возвращаем шаблон без форматирования в случае ошибки KeyError при форматировании
+                return text_template
 
     logging.warning(f"Localization: Ключ '{key}' не найден в переводах или для языка '{effective_lang_code}'.")
-    # Экранируем символы < и > для безопасного вывода в HTML
     error_placeholder = f"<L10N_ERROR: {key}_FOR_{effective_lang_code}>"
     return error_placeholder

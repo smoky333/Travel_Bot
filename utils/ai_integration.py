@@ -25,13 +25,9 @@ def _prepare_user_data_for_prompt(user_data_raw: Dict[str, Any]) -> Dict[str, An
     """
     prepared_data: Dict[str, Any] = {}
 
-    location_value = "не указано"  # Значение по умолчанию
+    location_value = "не указано"
     if user_data_raw.get('user_location_geo'):
         lat, lon = user_data_raw['user_location_geo']
-        # Для Gemini лучше передать что-то, что он может геокодировать, если нет названия города.
-        # Строка "координаты: lat,lon" может быть менее эффективна, чем просто передача lat,lon
-        # и просьба определить местоположение. Однако, наш промт сейчас ожидает строку.
-        # Оставим пока так, но это место для возможного улучшения (например, если бы AI мог принимать объект location).
         location_value = f"координаты: {lat},{lon}"
     elif user_data_raw.get('user_location_text'):
         location_value = user_data_raw.get('user_location_text')
@@ -56,8 +52,18 @@ def _prepare_user_data_for_prompt(user_data_raw: Dict[str, Any]) -> Dict[str, An
         transport_list = [t.strip() for t in user_data_raw['user_transport_prefs_text'].split(',') if t.strip()]
     prepared_data['transport_preferences'] = transport_list
 
-    prepared_data['history'] = user_data_raw.get('history', [])  # Пока всегда пустой
     prepared_data['user_language'] = user_data_raw.get('user_language', 'ru')
+
+    history_for_ai = []
+    liked_ids = user_data_raw.get('liked_recommendation_ids', [])
+    if liked_ids and isinstance(liked_ids, list):
+        history_for_ai.append({"type": "user_feedback_positive", "item_ids": liked_ids})
+
+    disliked_ids = user_data_raw.get('disliked_recommendation_ids', [])
+    if disliked_ids and isinstance(disliked_ids, list):
+        history_for_ai.append({"type": "user_feedback_negative", "item_ids": disliked_ids})
+
+    prepared_data['history'] = history_for_ai
 
     return prepared_data
 
@@ -65,10 +71,6 @@ def _prepare_user_data_for_prompt(user_data_raw: Dict[str, Any]) -> Dict[str, An
 async def get_travel_recommendations(
         user_data_raw: Dict[str, Any]
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """
-    Запрашивает рекомендации у модели Gemini.
-    Возвращает кортеж (structured_recommendations, textual_summary) или (None, error_message).
-    """
     if not GEMINI_API_KEY:
         logging.error("AI Integration: API ключ для Gemini не настроен или невалиден.")
         return None, "Ошибка конфигурации: API ключ для AI не найден или не работает. Проверьте настройки."
@@ -76,115 +78,139 @@ async def get_travel_recommendations(
     logging.info(f"AI Integration: Получены сырые данные от пользователя: {user_data_raw}")
     prepared = _prepare_user_data_for_prompt(user_data_raw)
 
-    # Для отладки можно раскомментировать, если уровень логирования INFO
+    # Для детальной отладки подготовленных данных
     # logging.info(f"AI Integration: Prepared data for prompt: {json.dumps(prepared, ensure_ascii=False, indent=2)}")
 
-    prompt_template = f"""<task>
-Ты — «Travel Bot», AI-ассистент для путешественников. Твоя задача — генерировать персонализированные рекомендации.
+    prompt_template = f"""<role>
+Ты — «Travel Bot», высококлассный AI-ассистент для путешественников. Твоя главная цель — предоставлять персонализированные, полезные и вдохновляющие рекомендации. 
+Ты должен строго следовать инструкциям по формату ответа и содержанию.
+</role>
+
+<task>
+Проанализируй предоставленные "Входные данные от пользователя" и сгенерируй для него план путешествия.
 </task>
 
-## ОБЩИЕ ИНСТРУКЦИИ ДЛЯ ТЕБЯ, AI:
-1.  **ФОРМАТ ОТВЕТА**: Ты ДОЛЖЕН вернуть ТОЛЬКО один JSON объект. Никакого текста до или после JSON, никакой Markdown разметки (типа ```json ... ```).
-2.  **ЯЗЫК ОТВЕТА**: АБСОЛЮТНО ВЕСЬ текст в твоем ответе (включая все значения строковых полей в JSON и текст в `textual_summary`) ДОЛЖЕН БЫТЬ СТРОГО на языке, указанном в поле `user_language` во Входных данных.
-3.  **СТРУКТУРА JSON**: JSON объект должен иметь два ключа верхнего уровня:
+## ОБЯЗАТЕЛЬНЫЕ ИНСТРУКЦИИ ДЛЯ ТЕБЯ, AI:
+1.  **ФОРМАТ ОТВЕТА**: Твой ответ ДОЛЖЕН БЫТЬ ТОЛЬКО ОДНИМ JSON объектом. Никакого текста до или после этого JSON. Никакой Markdown разметки (типа ```json ... ```) вокруг JSON.
+2.  **ЯЗЫК ОТВЕТА**: АБСОЛЮТНО ВЕСЬ текст в твоем ответе (все строковые значения в JSON и текст в `textual_summary`) ДОЛЖЕН БЫТЬ СТРОГО на языке, указанном в поле `user_language` во Входных данных. Это КРИТИЧЕСКИ ВАЖНО.
+3.  **СТРУКТУРА JSON**: JSON объект должен иметь ДВА ключа на верхнем уровне:
     *   `"structured_recommendations"`: JSON объект, содержащий `query_summary` и список `recommendations`.
-    *   `"textual_summary"`: Строка с дружелюбным сопроводительным текстом для пользователя (2-4 абзаца) на языке `user_language`.
-4.  **КАЧЕСТВО РЕКОМЕНДАЦИЙ**:
-    *   Предлагай РАЗНООБРАЗНЫЕ и АКТУАЛЬНЫЕ варианты.
-    *   Если по какому-то критерию качественных вариантов мало, лучше предложи меньше, но лучших, или честно укажи на это в `textual_summary`.
-    *   Старайся предлагать не менее 1-2 вариантов для отелей и ресторанов, и 2-3 для достопримечательностей/активностей, если это релевантно.
+    *   `"textual_summary"`: Строка с дружелюбным и полезным сопроводительным текстом для пользователя (2-4 абзаца) на языке `user_language`, кратко суммирующим предложенный план.
+4.  **ЭКРАНИРОВАНИЕ В JSON**: Если внутри строковых значений JSON (например, в полях "name", "description", "address") встречаются символы кавычек ("), ты ОБЯЗАН экранировать их как \\". Например: "name": "Отель \\"Цитадель\\"" - правильно. "name": "Отель "Цитадель"" - НЕПРАВИЛЬНО.
+5.  **КАЧЕСТВО И РАЗНООБРАЗИЕ РЕКОМЕНДАЦИЙ**:
+    *   Предлагай РАЗНООБРАЗНЫЕ, ИНТЕРЕСНЫЕ и РЕЛЕВАНТНЫЕ варианты, соответствующие `user_preferences`.
+    *   Если по какому-то критерию качественных вариантов мало (например, низкий бюджет в дорогом городе), лучше предложи меньше (или даже ни одного для этой категории), но честно укажи на это в `textual_summary` и, возможно, предложи более широкие альтернативы.
+    *   Старайся предлагать 1-2 варианта для отелей, 1-2 для ресторанов, и 2-3 для достопримечательностей/маршрутов/активностей, если это возможно и соответствует запросу.
+6.  **АКТУАЛЬНОСТЬ ИНФОРМАЦИИ**:
+    *   Для цен, часов работы и другой информации, которая может меняться, старайся давать наиболее общие или типичные данные.
+    *   Если ты не уверен в актуальности, ОБЯЗАТЕЛЬНО добавь в `description` или `textual_summary` фразу вроде "Рекомендуется проверить актуальные часы работы/цены на официальном сайте." на языке `user_language`.
+7.  **УЧЕТ ИСТОРИИ ПОЛЬЗОВАТЕЛЯ (`history`)**:
+    *   Если в `history` есть записи с `type: "user_feedback_negative"`, **КАТЕГОРИЧЕСКИ ИЗБЕГАЙ** предложений рекомендаций с `id` из списка `item_ids` этого фидбека.
+    *   Если в `history` есть записи с `type: "user_feedback_positive"`, рассматривай `item_ids` как примеры того, что нравится пользователю. Постарайся предложить НОВЫЕ, но ПОХОЖИЕ по духу/типу/ценовой категории рекомендации. **Не предлагай те же самые ID повторно, если только нет других подходящих вариантов.**
 
-### Входные данные от пользователя (Используй их для генерации)
+### Входные данные от пользователя (АНАЛИЗИРУЙ ИХ ВНИМАТЕЛЬНО)
 user_location: "{prepared['user_location']}"
 user_preferences: {json.dumps(prepared['user_preferences'], ensure_ascii=False)}
 trip_duration_text: "{prepared['trip_duration_text']}"
 transport_preferences: {json.dumps(prepared['transport_preferences'], ensure_ascii=False)}
-history: {json.dumps(prepared['history'], ensure_ascii=False)}
+history: {json.dumps(prepared['history'], ensure_ascii=False)} 
 user_language: "{prepared['user_language']}"
 
 ### ДЕТАЛЬНАЯ СПЕЦИФИКАЦИЯ для JSON объекта в "structured_recommendations"
 
-#### 1. Поле `query_summary` (объект):
-- `"location_interpreted"`: Строка. Название города/региона, которое ты понял из `user_location` (на языке `user_language`).
-- `"trip_days"`: Строка. Примерное количество дней поездки (например, "3 дня", "около недели") или JSON `null`, если неясно из `trip_duration_text`.
-- `"main_interests"`: Список строк. Основные интересы пользователя, которые ты выделил (на языке `user_language`).
+#### 1. Поле `query_summary` (JSON объект):
+- `"location_interpreted"`: Строка. Город/регион, который ты определил (на языке `user_language`).
+- `"trip_days"`: Строка. Примерное количество дней (например, "3 дня") или JSON `null`.
+- `"main_interests"`: Список строк. Ключевые интересы пользователя (на языке `user_language`).
 
-#### 2. Поле `recommendations` (список объектов):
-Каждый объект в списке `recommendations` должен содержать СЛЕДУЮЩИЕ ПОЛЯ:
-- `"id"`: Строка. Уникальный ID (латиница, цифры, подчеркивания, например, "hotel_le_grand_paris_01").
+#### 2. Поле `recommendations` (СПИСОК JSON объектов):
+Каждый объект в списке `recommendations` ДОЛЖЕН содержать следующие поля:
+- `"id"`: Строка. Уникальный ID (только латиница, цифры, подчеркивания, например, "hotel_grand_paris_01").
 - `"type"`: Строка. Один из: "route", "hotel", "museum", "restaurant", "event", "activity".
 - `"name"`: Строка. Название (на языке `user_language`).
-- `"address"`: Строка. Полный адрес (на языке `user_language`, если применимо) или JSON `null`.
-- `"coordinates"`: **Список из ДВУХ ЧИСЕЛ** [широта, долгота] (например, [48.8584, 2.2945]) ИЛИ JSON `null`, если точные координаты неизвестны. **НЕ используй строки типа "null" или ["null"]**.
-- `"description"`: Строка. Краткое, привлекательное описание (2-4 предложения на языке `user_language`).
-- `"details"`: JSON объект с дополнительной информацией, специфичной для `type`. Если деталей нет, используй пустой объект `{{}}`.
-    - Для `"type": "route"`: `{{ "route_type": "<тип_маршрута>", "stops": [{{ "name": "<Название>", "coordinates": [lat,lon], "description": "<Описание>" }}] }}`
-    - Для `"type": "hotel"`: `{{ "stars": <число_1_до_5_или_null>, "amenities": ["<удобство1>", "<удобство2>"] }}`
-    - Для `"type": "restaurant"`: `{{ "cuisine_type": ["<кухня1>", "<кухня2>"], "average_bill": "<~счет>" }}`
-    - Для `"type": "event"`: `{{ "event_dates": ["<YYYY-MM-DD>"], "ticket_info": "<билеты>" }}`
-    - Для `"type": "museum"` или `"activity"`: `{{ "ticket_info": "<билеты>" }}` (если платно)
-- `"distance_or_time"`: Строка (например, "500 м от центра", "3 часа") или JSON `null`.
-- `"price_estimate"`: Строка (например, "бесплатно", "20-30 EUR") или JSON `null`.
-- `"rating"`: Число от 1.0 до 5.0 или JSON `null`.
-- `"opening_hours"`: Строка (например, "10:00-18:00, Вт-Сб") или JSON `null`.
-- `"booking_link"`: **URL (строка) для бронирования/билетов (старайся найти РЕАЛЬНЫЙ URL) ИЛИ JSON `null`. НЕ используй строку "null".**
-- `"images"`: **Список URL картинок (строки). Старайся найти 1-2 РЕАЛЬНЫХ URL. Если нет, верни ПУСТОЙ СПИСОК `[]`. НЕ используй строки типа "null" или ["null"] или недействительные URL.**
+- `"address"`: Строка. Адрес (на языке `user_language`) или JSON `null`.
+- `"coordinates"`: **Список из ДВУХ ЧИСЕЛ** [широта, долгота] (например, [48.8584, 2.2945]) ИЛИ JSON `null`. **КАТЕГОРИЧЕСКИ НЕ ИСПОЛЬЗУЙ строки "null" или списки типа `["null"]`**.
+- `"description"`: Строка. Краткое (2-4 предложения), но привлекательное описание (на языке `user_language`).
+- `"details"`: JSON объект. Дополнительная информация. Если деталей нет, используй пустой объект `{{}}`.
+    - Для `"type": "route"`: `{{ "route_type": "<пеший/автомобильный/велосипедный>", "stops": [{{ "name": "<Название Остановки>", "coordinates": [48.8600, 2.3350], "description": "<Краткое описание остановки>" }}] }}` (в `stops` может быть несколько объектов).
+    - Для `"type": "hotel"`: `{{ "stars": <число от 1 до 5 ИЛИ null>, "amenities": ["<Удобство 1>", "<Удобство 2>"] }}` (список строк).
+    - Для `"type": "restaurant"`: `{{ "cuisine_type": ["<Тип кухни 1>", "<Тип кухни 2>"], "average_bill": "<Примерный средний счет, например '20-40 EUR'>" }}`.
+    - Для `"type": "event"`: `{{ "event_dates": ["<YYYY-MM-DD>"], "ticket_info": "<Информация о билетах, например 'От 25 EUR'>" }}`.
+    - Для `"type": "museum"` или `"type": "activity"`: `{{ "ticket_info": "<Информация о билетах или 'Бесплатно'>" }}` (если платно).
+- `"distance_or_time"`: Строка (например, "500 м от центра", "Около 3 часов") или JSON `null`.
+- `"price_estimate"`: Строка (например, "Бесплатно", "20-30 EUR с человека") или JSON `null`.
+- `"rating"`: Число от 1.0 до 5.0 (например, 4.7) или JSON `null`.
+- `"opening_hours"`: Строка (например, "10:00-18:00 (Вт-Вс)") или JSON `null`.
+- `"booking_link"`: **URL (строка) на ОФИЦИАЛЬНЫЙ сайт или ИЗВЕСТНЫЙ агрегатор ИЛИ JSON `null`. НЕ ВЫДУМЫВАЙ URL. НЕ ИСПОЛЬЗУЙ строку "null".**
+- `"images"`: **Список URL картинок (строки). Предпочтительны ссылки на Wikimedia Commons или официальные сайты. Если РЕАЛЬНЫХ и РАБОЧИХ ссылок нет, верни ПУСТОЙ СПИСОК `[]`. НЕ ИСПОЛЬЗУЙ строки "null", ["null"] или недействительные URL.**
 
-### Пример твоего ИДЕАЛЬНОГО ответа (ТОЛЬКО этот JSON, строго на языке `user_language`):
-{{  // Начало всего JSON ответа AI
-  "structured_recommendations": {{ // Начало structured_recommendations
+### Пример твоего ИДЕАЛЬНОГО ответа (ТОЛЬКО этот JSON, строго на языке `user_language` (пример ниже на русском для наглядности структуры)):
+{{
+  "structured_recommendations": {{
     "query_summary": {{
       "location_interpreted": "Париж, Франция", 
-      "trip_days": "3 дня",
-      "main_interests": ["искусство", "история"]
+      "trip_days": "2 дня",
+      "main_interests": ["искусство", "гастрономия"]
     }},
     "recommendations": [
-      {{ // Начало первой рекомендации
-        "id": "hotel_paris_splendide_001",
+      {{
+        "id": "hotel_le_bristol_paris_01",
         "type": "hotel",
-        "name": "Отель Сплендид Париж",
-        "address": "1 Rue de la Paix, Париж, Франция",
-        "coordinates": [48.8697, 2.3306],
-        "description": "Элегантный отель рядом с Вандомской площадью, предлагающий роскошные номера и первоклассный сервис.",
-        "details": {{ "stars": 5, "amenities": ["Спа", "Ресторан для гурманов", "Wi-Fi"] }},
-        "distance_or_time": "В центре города",
-        "price_estimate": "От 400 EUR/ночь",
-        "rating": 4.8,
-        "opening_hours": "Круглосуточно",
-        "booking_link": "https://www.example-hotel-splendide.com/booking",
-        "images": ["https://upload.wikimedia.org/wikipedia/commons/a/a2/Hotel_Splendide_Royal_Roma.jpg"]
-      }},
-      {{ // Начало второй рекомендации
-        "id": "museum_louvre_002",
-        "type": "museum",
-        "name": "Лувр",
-        "address": "Rue de Rivoli, Париж, Франция",
-        "coordinates": null, // Пример JSON null
-        "description": "Один из крупнейших и самых известных художественных музеев мира.",
-        "details": {{ "ticket_info": "От 17 EUR" }},
-        "distance_or_time": null,
-        "price_estimate": "17-22 EUR",
+        "name": "Отель Le Bristol Paris",
+        "address": "112 Rue du Faubourg Saint-Honoré, 75008 Париж, Франция",
+        "coordinates": [48.8725, 2.3153],
+        "description": "Один из самых престижных дворцовых отелей Парижа, известный своим исключительным сервисом и изысканными интерьерами.",
+        "details": {{ "stars": 5, "amenities": ["Бассейн на крыше", "Спа-центр Epicure", "Три ресторана Мишлен"] }},
+        "distance_or_time": "Рядом с Елисейскими Полями",
+        "price_estimate": "От 1200 EUR/ночь",
         "rating": 4.9,
-        "opening_hours": "09:00–18:00, Вт - выходной",
-        "booking_link": null, // Пример JSON null
-        "images": [] // Пример пустого списка
+        "opening_hours": "Круглосуточно",
+        "booking_link": "https://www.oetkercollection.com/hotels/le-bristol-paris/booking/",
+        "images": ["https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Le_Bristol_Paris_Exterior.jpg/800px-Le_Bristol_Paris_Exterior.jpg"]
+      }},
+      {{
+        "id": "route_montmartre_discovery_02",
+        "type": "route",
+        "name": "Открытие Монмартра",
+        "address": "Монмартр, Париж, Франция",
+        "coordinates": [48.8867, 2.3431],
+        "description": "Живописный пешеходный маршрут по богемному району Монмартр, включая базилику Сакре-Кёр и площадь Тертр.",
+        "details": {{ 
+            "route_type": "пеший", 
+            "stops": [
+                {{ "name": "Базилика Сакре-Кёр", "coordinates": [48.8867, 2.3431], "description": "Начните с потрясающего вида на город." }}, 
+                {{ "name": "Площадь Тертр", "coordinates": [48.8865, 2.3406], "description": "Площадь художников." }}
+            ] 
+        }},
+        "distance_or_time": "Около 2-3 часов",
+        "price_estimate": "Бесплатно (кроме сувениров)",
+        "rating": 4.7,
+        "opening_hours": null,
+        "booking_link": null,
+        "images": [] 
       }}
     ]
-  }}, // Конец structured_recommendations
-  "textual_summary": "Для вашей поездки в Париж я подобрал несколько отличных вариантов. Рекомендую остановиться в отеле 'Сплендид' и, конечно, посетить Лувр. Приятного путешествия!"
-}}  // Конец всего JSON ответа AI
+  }},
+  "textual_summary": "Для вашей поездки в Париж, предлагаю вам окунуться в роскошь отеля Le Bristol и исследовать очаровательные улочки Монмартра. Это сочетание элегантности и парижского шарма сделает ваше путешествие незабываемым. Рекомендую проверить часы работы достопримечательностей перед посещением."
+}}
 """
-    # Для отладки полного промта:
     # logging.info(f"AI Integration DEBUG PROMPT:\n{prompt_template}")
 
     try:
         model = genai.GenerativeModel(model_name='gemini-1.5-flash-latest')
         logging.info("AI Integration: Отправка запроса к Gemini...")
 
+        # Для более сложных настроек генерации (если понадобятся):
+        # generation_config = genai.types.GenerationConfig(
+        #     temperature=0.7, # Контролирует случайность. Меньше = более предсказуемо.
+        #     # max_output_tokens=4096, # Ограничение на длину ответа
+        #     # response_mime_type="application/json" # Если API это поддерживает напрямую
+        # )
+        # response = await model.generate_content_async(prompt_template, generation_config=generation_config)
+
         response = await model.generate_content_async(prompt_template)
 
         ai_text = ''
-        # Извлечение текста из ответа
         if hasattr(response, 'text') and response.text:
             ai_text = response.text
         elif hasattr(response, 'parts') and response.parts:
@@ -196,14 +222,12 @@ user_language: "{prepared['user_language']}"
                     ai_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text'))
             except (AttributeError, IndexError, TypeError):
                 logging.warning("AI Integration: Не удалось извлечь текст из response.candidates.")
-                pass
 
         if not ai_text:
             logging.error(
                 f"AI Integration: Ответ Gemini пустой или не содержит извлекаемого текста. Сырой ответ: {response}")
             return None, "AI не смог сгенерировать текстовый ответ. Пожалуйста, проверьте логи."
 
-        # Очистка от Markdown JSON обертки
         ai_text = ai_text.strip()
         if ai_text.startswith('```json'):
             ai_text = ai_text[len('```json'):].strip()
@@ -217,28 +241,40 @@ user_language: "{prepared['user_language']}"
             data = json.loads(ai_text)
         except json.JSONDecodeError as e:
             logging.error(f"AI Integration: Ошибка декодирования JSON от Gemini: {e}. "
-                          f"Ответ Gemini, который не удалось распарсить (первые 1000 символов):\n{ai_text[:1000]}")  # Выводим часть ответа
+                          f"Ответ Gemini, который не удалось распарсить (первые 1000 символов):\n{ai_text[:1000]}")
             return None, f"AI вернул некорректный JSON. (Ошибка: {e})"
 
         structured = data.get('structured_recommendations')
         summary = data.get('textual_summary')
 
-        # Более строгие проверки типов
         if not isinstance(structured, dict):
             logging.error(
-                f"AI Integration: 'structured_recommendations' отсутствует или не является словарем. Получено: {type(structured)}. Ответ: {data}")
+                f"AI Integration: 'structured_recommendations' отсутствует или не словарь. Получено: {type(structured)}. Ответ: {data}")
             return None, "AI вернул 'structured_recommendations' в неожиданном формате."
         if not isinstance(summary, str):
             logging.error(
-                f"AI Integration: 'textual_summary' отсутствует или не является строкой. Получено: {type(summary)}. Ответ: {data}")
+                f"AI Integration: 'textual_summary' отсутствует или не строка. Получено: {type(summary)}. Ответ: {data}")
             return None, "AI вернул 'textual_summary' в неожиданном формате."
 
-        # Дополнительная проверка структуры structured_recommendations
-        if not isinstance(structured.get("query_summary"), dict) or \
-                not isinstance(structured.get("recommendations"), list):
+        query_summary_val = structured.get("query_summary")
+        recommendations_list = structured.get("recommendations")
+
+        if not isinstance(query_summary_val, dict) or not isinstance(recommendations_list, list):
             logging.error(
-                f"AI Integration: Неверная внутренняя структура 'structured_recommendations'. Ответ: {structured}")
+                f"AI Integration: Неверная внутренняя структура 'structured_recommendations'. query_summary: {type(query_summary_val)}, recommendations: {type(recommendations_list)}. Ответ: {structured}")
             return None, "AI вернул 'structured_recommendations' с неверной внутренней структурой."
+
+        # Дополнительная валидация каждой рекомендации в списке (опционально, но полезно)
+        for idx, rec_item in enumerate(recommendations_list):
+            if not isinstance(rec_item, dict):
+                logging.warning(f"AI Integration: Элемент #{idx} в 'recommendations' не является словарем: {rec_item}")
+                # Можно удалить этот элемент или вернуть ошибку, в зависимости от требований
+                # пока просто логируем
+            else:
+                # Проверка обязательных полей, если нужно
+                if not rec_item.get("id") or not rec_item.get("type") or not rec_item.get("name"):
+                    logging.warning(
+                        f"AI Integration: Элемент #{idx} в 'recommendations' не содержит обязательных полей id/type/name: {rec_item.get('id')}")
 
         logging.info("AI Integration: Успешно получили и распарсили рекомендации от Gemini.")
         return structured, summary
