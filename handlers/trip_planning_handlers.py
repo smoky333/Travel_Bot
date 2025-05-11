@@ -7,86 +7,125 @@ from aiogram.fsm.context import FSMContext
 
 from handlers.trip_planning_states import TripPlanning
 from utils.ai_integration import get_travel_recommendations
-from utils.localization import get_text  # <--- ИМПОРТИРУЕМ get_text
+from utils.localization import get_text
 
 
 # ==============================================================================
-# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ФОРМАТИРОВАНИЯ РЕКОМЕНДАЦИИ (остается как есть)
+# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ФОРМАТИРОВАНИЯ РЕКОМЕНДАЦИИ
 # ==============================================================================
-async def _format_recommendation_text(recommendation: dict,
-                                      lang: str = "ru") -> str:  # Добавил lang для возможных будущих локализаций здесь
+async def _format_recommendation_text(recommendation: dict, lang: str = "ru") -> str:
     """
     Формирует красивый текстовый блок для одной рекомендации.
-    Тексты из recommendation УЖЕ ДОЛЖНЫ БЫТЬ на нужном языке от AI.
-    Эта функция в основном про HTML форматирование и структуру.
+    Тексты из recommendation (name, description, etc.) УЖЕ ДОЛЖНЫ БЫТЬ на нужном языке от AI.
+    Эта функция отвечает за HTML форматирование, структуру и локализацию ЗАГОЛОВКОВ.
     """
-    rec_type_map_general = {"route": "🗺️", "transport_option": "🚌", "hotel": "🏨", "museum": "🏛️", "restaurant": "🍽️",
-                            "event": "🎉", "activity": "🤸"}
-    rec_type_default_name_key = {
-        "route": "rec_type_route_default", "hotel": "rec_type_hotel_default",
-        "museum": "rec_type_museum_default", "restaurant": "rec_type_restaurant_default",
-        # Добавь ключи для других типов, если они нужны в get_text
+    rec_type_map_general = {
+        "route": "🗺️", "hotel": "🏨", "museum": "🏛️",
+        "restaurant": "🍽️", "event": "🎉", "activity": "🤸",
+        "transport_option": "🚌"  # Добавил, если понадобится
     }
-
     rec_type = recommendation.get("type", "unknown")
-    type_name_key = rec_type_default_name_key.get(rec_type, f"rec_type_{rec_type}_default")  # ключ для get_text
 
-    # Пытаемся получить локализованное название типа, если есть, иначе используем сам тип
-    # Для этого в localization.py должны быть ключи типа rec_type_route_default_ru, rec_type_route_default_en и т.д.
-    # Пока что оставим простой вариант с эмодзи + название из recommendation, которое уже должно быть локализовано AI
-    rec_type_display = f"{rec_type_map_general.get(rec_type, '⭐')} {recommendation.get('type_name_localized_by_ai', rec_type.capitalize())}"
-    # ^ AI должен вернуть локализованное название типа в поле type_name_localized_by_ai, если мы этого хотим,
-    # но проще, если AI сам локализует поле "name" рекомендации, а тип мы обрабатываем здесь.
-    # Оставим как было: эмодзи + name (которое уже от AI на нужном языке)
+    # Имя рекомендации уже должно быть локализовано AI
+    name_from_ai = recommendation.get('name', get_text('text_no_name', lang))
+    text_parts = [f"<b>{rec_type_map_general.get(rec_type, '⭐')}: {name_from_ai}</b>"]
 
-    text_parts = [
-        f"<b>{rec_type_map_general.get(rec_type, '⭐')}: {recommendation.get('name', get_text('text_no_name', lang))}</b>"
-    ]
+    address = recommendation.get('address')
+    if address and str(address).lower() != "null" and str(address).strip() != "":
+        text_parts.append(f"📍 <b>{get_text('text_address', lang)}:</b> {address}")
 
-    if recommendation.get('address') and str(recommendation.get('address')).lower() != "null":
-        text_parts.append(f"📍 <b>{get_text('text_address', lang)}:</b> {recommendation.get('address')}")
-
-    if recommendation.get('description'):
-        text_parts.append(f"📝 <i>{recommendation.get('description')}</i>")
+    description = recommendation.get('description')
+    if description:
+        text_parts.append(f"📝 <i>{description}</i>")
 
     details = recommendation.get("details")
-    if details and isinstance(details, dict):
+    if details and isinstance(details, dict) and details:  # Убедимся, что details не пустой словарь
         detail_str_parts = []
-        # ... (остальная логика для details, она уже работает с данными от AI) ...
-        # Например, если AI вернул "cuisine_type": ["Итальянская", "Пицца"] на русском,
-        # то так и отобразится. Если на французском, то тоже.
-        # Здесь локализация нужна только для заголовков типа "Тип маршрута:", "Удобства:"
-        if recommendation.get("type") == "route" and details.get("route_type"):
-            detail_str_parts.append(f"{get_text('detail_route_type', lang)}: {details['route_type']}")
-        if recommendation.get("type") == "route" and details.get("stops"):
-            stops_str = ", ".join([s.get('name', get_text('text_stop', lang)) for s in details['stops'][:3]])
-            if len(details['stops']) > 3:
-                stops_str += f" {get_text('text_and_more', lang)}"
-            detail_str_parts.append(f"{get_text('detail_stops', lang)}: {stops_str}")
-        # ... и так далее для других деталей ...
+
+        if rec_type == "route":
+            if details.get("route_type"):
+                detail_str_parts.append(f"<b>{get_text('detail_route_type', lang)}:</b> {details['route_type']}")
+            if details.get("stops") and isinstance(details["stops"], list):
+                stops_names = [s.get('name', get_text('text_stop', lang)) for s in details["stops"][:3] if
+                               isinstance(s, dict)]
+                if stops_names:
+                    stops_text = ", ".join(stops_names)
+                    if len(details["stops"]) > 3:
+                        stops_text += f" {get_text('text_and_more', lang)}"
+                    detail_str_parts.append(f"<b>{get_text('detail_stops', lang)}:</b> {stops_text}")
+
+        elif rec_type == "hotel":
+            stars_value = details.get("stars")
+            if stars_value and str(stars_value).lower() != 'null':
+                try:
+                    stars_num = int(stars_value)
+                    if 0 < stars_num <= 5:
+                        detail_str_parts.append(
+                            f"<b>{get_text('detail_hotel_stars', lang)}:</b> {'⭐' * stars_num} ({stars_num})")
+                    else:
+                        detail_str_parts.append(f"<b>{get_text('detail_hotel_stars', lang)}:</b> {stars_value}")
+                except (ValueError, TypeError):  # Добавил TypeError на случай если stars_value это не строка и не число
+                    detail_str_parts.append(f"<b>{get_text('detail_hotel_stars', lang)}:</b> {stars_value}")
+
+            amenities = details.get("amenities")
+            if amenities and isinstance(amenities, list) and amenities:
+                amenities_text = ", ".join(amenities[:3])
+                if len(amenities) > 3:
+                    amenities_text += f" {get_text('text_and_more', lang)}"
+                detail_str_parts.append(f"<b>{get_text('detail_hotel_amenities', lang)}:</b> {amenities_text}")
+
+        elif rec_type == "restaurant":
+            cuisine_types = details.get("cuisine_type")
+            if cuisine_types:
+                if isinstance(cuisine_types, list) and cuisine_types:
+                    detail_str_parts.append(
+                        f"<b>{get_text('detail_restaurant_cuisine', lang)}:</b> {', '.join(cuisine_types)}")
+                elif isinstance(cuisine_types, str) and cuisine_types.strip():
+                    detail_str_parts.append(f"<b>{get_text('detail_restaurant_cuisine', lang)}:</b> {cuisine_types}")
+
+            average_bill = details.get("average_bill")
+            if average_bill and str(average_bill).lower() != 'null' and str(average_bill).strip() != "":
+                detail_str_parts.append(f"<b>{get_text('detail_restaurant_avg_bill', lang)}:</b> {average_bill}")
+
+        elif rec_type == "event":
+            event_dates = details.get("event_dates")
+            if event_dates:
+                if isinstance(event_dates, list) and event_dates:
+                    detail_str_parts.append(f"<b>{get_text('detail_event_dates', lang)}:</b> {', '.join(event_dates)}")
+                elif isinstance(event_dates, str) and event_dates.strip():
+                    detail_str_parts.append(f"<b>{get_text('detail_event_dates', lang)}:</b> {event_dates}")
+
+            ticket_info = details.get("ticket_info")
+            if ticket_info and str(ticket_info).lower() != 'null' and str(ticket_info).strip() != "":
+                detail_str_parts.append(f"<b>{get_text('detail_ticket_info', lang)}:</b> {ticket_info}")
+
+        elif rec_type in ["museum", "activity"]:
+            ticket_info = details.get("ticket_info")
+            if ticket_info and str(ticket_info).lower() != 'null' and str(ticket_info).strip() != "":
+                detail_str_parts.append(f"<b>{get_text('detail_ticket_info', lang)}:</b> {ticket_info}")
 
         if detail_str_parts:
             text_parts.append(f"\n<b>{get_text('text_details_header', lang)}:</b>\n" + "\n".join(
-                [f"  - {d}" for d in detail_str_parts]))
+                [f"  • {d}" for d in detail_str_parts]))
 
-    if recommendation.get('distance_or_time') and str(recommendation.get('distance_or_time')).lower() != "null":
-        text_parts.append(
-            f"🚗/🚶 <b>{get_text('text_distance_time', lang)}:</b> {recommendation.get('distance_or_time')}")
+    dist_time = recommendation.get('distance_or_time')
+    if dist_time and str(dist_time).lower() != "null" and str(dist_time).strip() != "":
+        text_parts.append(f"🚗/🚶 <b>{get_text('text_distance_time', lang)}:</b> {dist_time}")
 
     price_est = recommendation.get('price_estimate')
-    if price_est and str(price_est).lower() != "null":
+    if price_est and str(price_est).lower() != "null" and str(price_est).strip() != "":
         text_parts.append(f"💰 <b>{get_text('text_price', lang)}:</b> {price_est}")
 
     rating_val = recommendation.get('rating')
     if rating_val and str(rating_val).lower() != "null":
-        try:  # Попытка преобразовать в float, если это число
+        try:
             rating_float = float(rating_val)
             text_parts.append(f"🌟 <b>{get_text('text_rating', lang)}:</b> {rating_float:.1f}/5")
-        except ValueError:  # Если не число, выводим как есть
+        except (ValueError, TypeError):
             text_parts.append(f"🌟 <b>{get_text('text_rating', lang)}:</b> {rating_val}")
 
     oh = recommendation.get('opening_hours')
-    if oh and str(oh).lower() != "null":
+    if oh and str(oh).lower() != "null" and str(oh).strip() != "":
         text_parts.append(f"⏰ <b>{get_text('text_opening_hours', lang)}:</b> {oh}")
 
     return "\n\n".join(text_parts)
@@ -99,16 +138,13 @@ trip_planning_router = Router(name="trip_planning_router")
 
 
 async def get_user_language(state: FSMContext, default_lang: str = "ru") -> str:
-    """Вспомогательная функция для получения языка пользователя из состояния."""
     user_data = await state.get_data()
     return user_data.get("user_language", default_lang)
 
 
-# Обработчик команды /plan_trip
 @trip_planning_router.message(Command("plan_trip"))
 async def cmd_plan_trip(message: Message, state: FSMContext):
     lang = await get_user_language(state)
-
     await message.answer(
         get_text("start_planning_prompt", lang) + "\n\n" +
         get_text("step1_location_prompt", lang),
@@ -116,150 +152,116 @@ async def cmd_plan_trip(message: Message, state: FSMContext):
     )
     await state.set_state(TripPlanning.waiting_for_location)
     logging.info(
-        f"Пользователь {message.from_user.id} начал планирование ({lang}). Переведен в состояние waiting_for_location.")
+        f"Пользователь {message.from_user.id} начал планирование ({lang}). Состояние: {await state.get_state()}")
 
 
-# Обработчик для получения ответа на вопрос о локации (текстовый ввод)
 @trip_planning_router.message(TripPlanning.waiting_for_location, F.text)
 async def process_location_text(message: Message, state: FSMContext):
     lang = await get_user_language(state)
-    logging.info(f"СРАБОТАЛ process_location_text для пользователя {message.from_user.id} ({lang})")
-
+    logging.info(f"process_location_text для пользователя {message.from_user.id} ({lang})")
     await state.update_data(user_location_text=message.text.strip(), user_location_geo=None)
-    user_data = await state.get_data()  # Обновленные данные
-    logging.info(f"Данные от пользователя {message.from_user.id} ({lang}) после ввода текстовой локации: {user_data}")
-
+    logging.info(f"Данные после текстовой локации: {await state.get_data()}")
     await message.answer(get_text("location_received_text", lang, location_text=message.text))
-    await _ask_for_interests(message, state, lang)  # Передаем lang
+    await _ask_for_interests(message, state, lang)
 
 
-# Обработчик для получения геолокации от пользователя
 @trip_planning_router.message(TripPlanning.waiting_for_location, F.content_type == ContentType.LOCATION)
 async def process_location_geo(message: Message, state: FSMContext):
     lang = await get_user_language(state)
-    logging.info(f"СРАБОТАЛ process_location_geo для пользователя {message.from_user.id} ({lang})")
-
-    user_latitude = message.location.latitude
-    user_longitude = message.location.longitude
-
-    await state.update_data(user_location_geo=[user_latitude, user_longitude], user_location_text=None)
-    user_data = await state.get_data()  # Обновленные данные
-    logging.info(
-        f"Пользователь {message.from_user.id} ({lang}) отправил геолокацию: [{user_latitude}, {user_longitude}]. Данные state: {user_data}")
-
-    await message.answer(
-        get_text("location_geo_received_text", lang, latitude=user_latitude, longitude=user_longitude)
-    )
-    await _ask_for_interests(message, state, lang)  # Передаем lang
+    logging.info(f"process_location_geo для пользователя {message.from_user.id} ({lang})")
+    lat, lon = message.location.latitude, message.location.longitude
+    await state.update_data(user_location_geo=[lat, lon], user_location_text=None)
+    logging.info(f"Данные после геолокации: {await state.get_data()}")
+    await message.answer(get_text("location_geo_received_text", lang, latitude=lat, longitude=lon))
+    await _ask_for_interests(message, state, lang)
 
 
-async def _ask_for_interests(message: Message, state: FSMContext, lang: str):  # Принимает lang
-    """Вспомогательная функция для вопроса об интересах."""
+async def _ask_for_interests(message: Message, state: FSMContext, lang: str):
     await message.answer(get_text("step2_interests_prompt", lang))
     await state.set_state(TripPlanning.waiting_for_interests)
-    logging.info(f"Пользователь {message.from_user.id} ({lang}) переведен в состояние waiting_for_interests.")
+    logging.info(f"Пользователь {message.from_user.id} ({lang}) переведен в состояние: {await state.get_state()}")
 
 
-# Обработчик для получения ответа на вопрос об интересах
 @trip_planning_router.message(TripPlanning.waiting_for_interests, F.text)
 async def process_interests(message: Message, state: FSMContext):
     lang = await get_user_language(state)
     await state.update_data(user_interests_text=message.text.strip())
-    user_data = await state.get_data()
-    logging.info(f"Данные от пользователя {message.from_user.id} ({lang}) после ввода интересов: {user_data}")
-
-    budget_buttons = [
+    logging.info(f"Данные после ввода интересов: {await state.get_data()}")
+    buttons = [
         [InlineKeyboardButton(text=get_text("budget_option_low", lang), callback_data="budget_low")],
         [InlineKeyboardButton(text=get_text("budget_option_mid", lang), callback_data="budget_mid")],
         [InlineKeyboardButton(text=get_text("budget_option_premium", lang), callback_data="budget_premium")]
     ]
-    budget_keyboard = InlineKeyboardMarkup(inline_keyboard=budget_buttons)
-
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     await message.answer(
         get_text("interests_received_text", lang, interests_text=message.text) + "\n\n" +
         get_text("step3_budget_prompt", lang),
-        reply_markup=budget_keyboard
+        reply_markup=keyboard
     )
     await state.set_state(TripPlanning.waiting_for_budget)
-    logging.info(f"Пользователь {message.from_user.id} ({lang}) переведен в состояние waiting_for_budget.")
+    logging.info(f"Пользователь {message.from_user.id} ({lang}) переведен в состояние: {await state.get_state()}")
 
 
-# Обработчик для нажатия кнопки бюджета
 @trip_planning_router.callback_query(TripPlanning.waiting_for_budget, F.data.startswith("budget_"))
 async def process_budget_callback(callback_query: CallbackQuery, state: FSMContext):
     lang = await get_user_language(state)
-    selected_budget_code = callback_query.data.split("_")[1]
-    await state.update_data(user_budget=selected_budget_code)
+    code = callback_query.data.split("_")[1]
+    await state.update_data(user_budget=code)
+    logging.info(f"Данные после выбора бюджета: {await state.get_data()}")
 
-    user_data = await state.get_data()
-    logging.info(f"Данные от пользователя {callback_query.from_user.id} ({lang}) после выбора бюджета: {user_data}")
-
-    # Получаем локализованное название бюджета для сообщения
-    budget_display_name = ""
-    if selected_budget_code == "low":
-        budget_display_name = get_text("budget_option_low", lang)
-    elif selected_budget_code == "mid":
-        budget_display_name = get_text("budget_option_mid", lang)
-    elif selected_budget_code == "premium":
-        budget_display_name = get_text("budget_option_premium", lang)
-
-    # Удаляем эмодзи из budget_display_name, если он там есть, для чистоты сообщения
-    budget_display_name_cleaned = budget_display_name.split(" ", 1)[
-        -1] if " " in budget_display_name else budget_display_name
+    budget_name_key = f"budget_option_{code}"
+    # Пытаемся получить полное название бюджета, если оно есть, иначе используем код
+    budget_display_name = get_text(budget_name_key, lang).split(" ", 1)[-1] if " " in get_text(budget_name_key,
+                                                                                               lang) else code
 
     await callback_query.message.edit_text(
-        get_text("budget_selected_text", lang, selected_budget=budget_display_name_cleaned) + "\n\n" +
+        get_text("budget_selected_text", lang, selected_budget=budget_display_name) + "\n\n" +
         get_text("step4_dates_prompt", lang)
     )
-    await callback_query.answer(
-        text=get_text("budget_selected_text", lang, selected_budget=budget_display_name_cleaned), show_alert=False)
+    await callback_query.answer(text=get_text("budget_selected_text", lang, selected_budget=budget_display_name),
+                                show_alert=False)
     await state.set_state(TripPlanning.waiting_for_trip_dates)
-    logging.info(f"Пользователь {callback_query.from_user.id} ({lang}) переведен в состояние waiting_for_trip_dates.")
+    logging.info(
+        f"Пользователь {callback_query.from_user.id} ({lang}) переведен в состояние: {await state.get_state()}")
 
 
-# Обработчик для получения ответа на вопрос о датах поездки
 @trip_planning_router.message(TripPlanning.waiting_for_trip_dates, F.text)
 async def process_trip_dates(message: Message, state: FSMContext):
     lang = await get_user_language(state)
     await state.update_data(user_trip_dates_text=message.text.strip())
-    user_data = await state.get_data()
-    logging.info(f"Данные от пользователя {message.from_user.id} ({lang}) после ввода дат: {user_data}")
-
+    logging.info(f"Данные после ввода дат: {await state.get_data()}")
     await message.answer(
         get_text("dates_received_text", lang, dates_text=message.text) + "\n\n" +
         get_text("step5_transport_prompt", lang)
     )
     await state.set_state(TripPlanning.waiting_for_transport_prefs)
-    logging.info(f"Пользователь {message.from_user.id} ({lang}) переведен в состояние waiting_for_transport_prefs.")
+    logging.info(f"Пользователь {message.from_user.id} ({lang}) переведен в состояние: {await state.get_state()}")
 
 
-# Обработчик для получения ответа на вопрос о предпочтениях по транспорту
 @trip_planning_router.message(TripPlanning.waiting_for_transport_prefs, F.text)
 async def process_transport_prefs(message: Message, state: FSMContext, bot: Bot):
     await state.update_data(user_transport_prefs_text=message.text.strip())
     final_user_data = await state.get_data()
-    lang = final_user_data.get("user_language", "ru")  # Получаем язык из финальных данных
+    lang = final_user_data.get("user_language", "ru")
     logging.info(f"Все собранные данные от пользователя {message.from_user.id} ({lang}): {final_user_data}")
 
     await message.answer(
         get_text("transport_received_text", lang, transport_text=message.text) + "\n\n" +
         get_text("all_data_collected_prompt", lang)
     )
-    await state.clear()  # Очищаем состояние FSM после сбора всех данных
+    await state.clear()
 
     recommendations_json, accompanying_text = await get_travel_recommendations(final_user_data)
 
     if recommendations_json and accompanying_text:
-        # Сопроводительный текст уже должен быть на нужном языке от Gemini
-        await message.answer(accompanying_text)
+        await message.answer(accompanying_text)  # Текст уже должен быть на нужном языке от AI
 
         if "recommendations" in recommendations_json and isinstance(recommendations_json["recommendations"], list):
-            for rec in recommendations_json["recommendations"]:
-                if not isinstance(rec, dict):  # Проверка, что каждый элемент - словарь
-                    logging.warning(f"Некорректный элемент в списке recommendations: {rec}")
+            for rec_idx, rec in enumerate(recommendations_json["recommendations"]):
+                if not isinstance(rec, dict):
+                    logging.warning(f"Элемент #{rec_idx} в recommendations не словарь: {rec}")
                     continue
 
-                # Передаем язык в функцию форматирования
                 formatted_text = await _format_recommendation_text(rec, lang)
 
                 buttons = []
@@ -268,62 +270,55 @@ async def process_transport_prefs(message: Message, state: FSMContext, bot: Bot)
 
                 booking_url = rec.get('booking_link')
                 if booking_url and isinstance(booking_url,
-                                              str) and booking_url.strip().lower() != "null" and booking_url.strip() != "":
+                                              str) and booking_url.lower() != "null" and booking_url.strip():
                     buttons.append(InlineKeyboardButton(text=button_book_text, url=booking_url))
 
                 coords = rec.get('coordinates')
                 if coords and isinstance(coords, list) and len(coords) == 2:
                     try:
-                        # Убедимся, что координаты - числа
                         lat, lon = float(coords[0]), float(coords[1])
                         maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
                         buttons.append(InlineKeyboardButton(text=button_map_text, url=maps_url))
                     except (ValueError, TypeError):
-                        logging.warning(
-                            f"Некорректные координаты для кнопки 'На карте': {coords} в рекомендации: {rec.get('id')}")
+                        logging.warning(f"Некорректные координаты для rec_id {rec.get('id')}: {coords}")
 
                 reply_markup = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
                 images = rec.get("images", [])
                 photo_sent = False
-                if images and isinstance(images, list) and images and isinstance(images[0], str) and images[
-                    0].strip().lower() != "null" and images[0].strip() != "":
+                if images and isinstance(images, list) and images and \
+                        isinstance(images[0], str) and images[0].lower() != "null" and images[0].strip():
                     try:
                         await bot.send_photo(
-                            chat_id=message.chat.id,
-                            photo=images[0],
-                            caption=formatted_text,
-                            reply_markup=reply_markup,
-                            parse_mode="HTML"
+                            chat_id=message.chat.id, photo=images[0], caption=formatted_text,
+                            reply_markup=reply_markup, parse_mode="HTML"
                         )
                         photo_sent = True
                     except Exception as e:
                         logging.warning(
-                            f"Ошибка отправки фото {images[0]} для rec_id {rec.get('id')}: {e}. Попытка отправить только текст.")
+                            f"Ошибка отправки фото {images[0]} для rec_id {rec.get('id')}: {e}. Отправка текста.")
 
                 if not photo_sent:
                     await message.answer(formatted_text, reply_markup=reply_markup, parse_mode="HTML")
         else:
             await message.answer(get_text("no_recommendations_in_response_text", lang))
     else:
-        # accompanying_text здесь может содержать сообщение об ошибке от get_travel_recommendations
-        error_key = "ai_response_error_text"  # Ключ по умолчанию
+        error_key = "ai_response_error_text"
         error_details = ""
-        if accompanying_text:
+        if accompanying_text:  # accompanying_text может содержать сообщение об ошибке от get_travel_recommendations
             if " некорректный JSON" in accompanying_text:
                 error_key = "ai_json_decode_error_text"
-                try:  # Пытаемся извлечь детали ошибки из сообщения
-                    error_details = accompanying_text.split("(Ошибка: ", 1)[1].rstrip(")")
-                except IndexError:
-                    error_details = "детали неизвестны"
             elif "Непредвиденная ошибка" in accompanying_text:
                 error_key = "ai_unexpected_error_text"
-                try:
-                    error_details = accompanying_text.split(": ", 1)[1].rstrip(".")
-                except IndexError:
-                    error_details = "детали неизвестны"
-            elif "неверном формате" in accompanying_text:  # "AI вернул данные в неверном формате"
+            elif "неверном формате" in accompanying_text:
                 error_key = "ai_unexpected_format_text"
+
+            try:
+                error_details = accompanying_text.split("Ошибка: ", 1)[1].rstrip(
+                    ")") if "(Ошибка: " in accompanying_text else accompanying_text.split(": ", 1)[-1].rstrip(".")
+            except IndexError:
+                error_details = accompanying_text if len(
+                    accompanying_text) < 50 else "детали см. в логах"  # Если не удалось извлечь, показываем всё (или часть)
 
         await message.answer(get_text(error_key, lang, error_details=error_details, error_type=error_details))
 

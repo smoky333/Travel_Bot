@@ -95,9 +95,17 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "text_address": {"ru": "Адрес", "en": "Address", "fr": "Adresse"},
     "text_details_header": {"ru": "Детали", "en": "Details", "fr": "Détails"},
     "detail_route_type": {"ru": "Тип маршрута", "en": "Route Type", "fr": "Type d'itinéraire"},
-    "detail_stops": {"ru": "Остановки", "en": "Stops", "fr": "Arrêts"},  # <--- ДОБАВЛЕН НЕДОСТАЮЩИЙ КЛЮЧ
+    "detail_stops": {"ru": "Остановки", "en": "Stops", "fr": "Arrêts"},
     "text_stop": {"ru": "Остановка", "en": "Stop", "fr": "Arrêt"},
     "text_and_more": {"ru": "и др.", "en": "and more", "fr": "et plus"},
+    "detail_hotel_stars": {"ru": "Звезд", "en": "Stars", "fr": "Étoiles"},
+    "detail_hotel_stars_suffix": {"ru": "звезд(ы)", "en": "stars", "fr": "étoiles"},
+    # Для примера с count, если будешь делать
+    "detail_hotel_amenities": {"ru": "Удобства", "en": "Amenities", "fr": "Équipements"},
+    "detail_restaurant_cuisine": {"ru": "Кухня", "en": "Cuisine", "fr": "Cuisine"},
+    "detail_restaurant_avg_bill": {"ru": "Средний чек", "en": "Average Bill", "fr": "Note Moyenne"},
+    "detail_event_dates": {"ru": "Даты проведения", "en": "Event Dates", "fr": "Dates de l'événement"},
+    "detail_ticket_info": {"ru": "Информация о билетах", "en": "Ticket Info", "fr": "Infos Billets"},
     "text_distance_time": {"ru": "Расстояние/Время", "en": "Distance/Time", "fr": "Distance/Temps"},
     "text_price": {"ru": "Цена", "en": "Price", "fr": "Prix"},
     "text_rating": {"ru": "Рейтинг", "en": "Rating", "fr": "Évaluation"},
@@ -144,7 +152,7 @@ def get_text(key: str, lang_code: Optional[str] = None, **kwargs: Any) -> str:
     if translation_dict:
         text_template = translation_dict.get(effective_lang_code)
         if not text_template:
-            text_template = translation_dict.get(DEFAULT_LANGUAGE)
+            text_template = translation_dict.get(DEFAULT_LANGUAGE)  # Фоллбэк на язык по умолчанию
 
         if text_template:
             try:
@@ -152,7 +160,7 @@ def get_text(key: str, lang_code: Optional[str] = None, **kwargs: Any) -> str:
             except KeyError as e:
                 logging.error(
                     f"Localization: Отсутствует ключ форматирования '{e}' для текста '{key}' на языке '{effective_lang_code}'. Шаблон: '{text_template}'")
-                return text_template
+                return text_template  # Возвращаем шаблон без форматирования в случае ошибки KeyError при форматировании
 
     logging.warning(f"Localization: Ключ '{key}' не найден в переводах или для языка '{effective_lang_code}'.")
     # Экранируем символы < и > для безопасного вывода в HTML
