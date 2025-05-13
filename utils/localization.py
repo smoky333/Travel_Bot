@@ -22,6 +22,18 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "en": "👋 Hello! Please select your language:",
         "fr": "👋 Bonjour ! Veuillez sélectionner votre langue :"
     },
+    # >>> НАЧАЛО ДОБАВЛЕННЫХ КЛЮЧЕЙ
+    "welcome_back": {
+        "ru": "С возвращением! Я вижу, вы предпочитаете <b>{language}</b> язык.\n\nНачните планирование с /plan_trip или смените язык командой /language.",
+        "en": "Welcome back! I see you prefer the <b>{language}</b> language.\n\nStart planning with /plan_trip or change your language with the /language command.",
+        "fr": "Bon retour ! Je vois que vous préférez la langue <b>{language}</b>.\n\nCommencez à planifier avec /plan_trip ou changez de langue avec la commande /language."
+    },
+    "db_error_lang_save": {
+        "ru": "⚠️ Произошла ошибка при сохранении вашего выбора языка. Пожалуйста, попробуйте позже или свяжитесь с поддержкой.",
+        "en": "⚠️ An error occurred while saving your language preference. Please try again later or contact support.",
+        "fr": "⚠️ Une erreur s'est produite lors de l'enregistrement de votre préférence linguistique. Veuillez réessayer plus tard ou contacter le support."
+    },
+    # <<< КОНЕЦ ДОБАВЛЕННЫХ КЛЮЧЕЙ
     # --- Тексты для trip_planning_handlers.py (FSM) ---
     "start_planning_prompt": {
         "ru": "Отлично! Начнем планирование вашей идеальной поездки. ✨",
@@ -94,14 +106,14 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     # --- Тексты для кнопок и форматирования рекомендаций ---
     "button_book_tickets": {"ru": "🔗 Бронь/Билеты", "en": "🔗 Book/Tickets", "fr": "🔗 Réserver/Billets"},
     "button_on_map": {"ru": "🗺️ На карте", "en": "🗺️ On Map", "fr": "🗺️ Sur la carte"},
-    "button_like": {"ru": "Нравится", "en": "Like", "fr": "J'aime"},  # <--- ДОБАВЛЕНО
-    "button_dislike": {"ru": "Не нравится", "en": "Dislike", "fr": "Je n'aime pas"},  # <--- ДОБАВЛЕНО
-    "feedback_thanks_like": {  # <--- ДОБАВЛЕНО
+    "button_like": {"ru": "Нравится", "en": "Like", "fr": "J'aime"},
+    "button_dislike": {"ru": "Не нравится", "en": "Dislike", "fr": "Je n'aime pas"},
+    "feedback_thanks_like": {
         "ru": "Спасибо, ваш голос учтен!",
         "en": "Thanks, your feedback is saved!",
         "fr": "Merci, votre avis est enregistré !"
     },
-    "feedback_thanks_dislike": {  # <--- ДОБАВЛЕНО
+    "feedback_thanks_dislike": {
         "ru": "Понятно, спасибо за отзыв.",
         "en": "Got it, thanks for your feedback.",
         "fr": "Compris, merci pour votre avis."
@@ -152,7 +164,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     }
 }
 
-DEFAULT_LANGUAGE = "ru"
+DEFAULT_LANGUAGE = "ru" # По умолчанию, если язык пользователя не определен или не поддерживается
 
 
 def get_text(key: str, lang_code: Optional[str] = None, **kwargs: Any) -> str:
@@ -161,22 +173,42 @@ def get_text(key: str, lang_code: Optional[str] = None, **kwargs: Any) -> str:
     Поддерживает форматирование с помощью kwargs.
     Экранирует плейсхолдер ошибки для безопасного вывода в HTML.
     """
-    effective_lang_code = lang_code if lang_code and lang_code in SUPPORTED_LANGUAGES.values() else DEFAULT_LANGUAGE
+    # Определяем язык, который будем использовать
+    effective_lang_code = lang_code
+    if not effective_lang_code or effective_lang_code not in SUPPORTED_LANGUAGES.values():
+        effective_lang_code = DEFAULT_LANGUAGE
+        if lang_code: # Логируем, если запрошенный язык не поддерживается, но не был None
+             logging.debug(f"Localization: Запрошенный язык '{lang_code}' не поддерживается или отсутствует. Используется язык по умолчанию '{DEFAULT_LANGUAGE}'.")
+
 
     translation_dict = TRANSLATIONS.get(key)
     if translation_dict:
         text_template = translation_dict.get(effective_lang_code)
-        if not text_template:
+        # Если перевод на целевом языке отсутствует, пытаемся взять перевод на языке по умолчанию
+        if not text_template and effective_lang_code != DEFAULT_LANGUAGE:
             text_template = translation_dict.get(DEFAULT_LANGUAGE)
+            if text_template:
+                 logging.debug(f"Localization: Перевод для ключа '{key}' на языке '{effective_lang_code}' отсутствует. Используется перевод на языке по умолчанию '{DEFAULT_LANGUAGE}'.")
+
 
         if text_template:
             try:
                 return text_template.format(**kwargs)
             except KeyError as e:
                 logging.error(
-                    f"Localization: Отсутствует ключ форматирования '{e}' для текста '{key}' на языке '{effective_lang_code}'. Шаблон: '{text_template}'")
+                    f"Localization: Отсутствует ключ форматирования '{e}' для текста '{key}' на языке '{effective_lang_code}'. Шаблон: '{text_template}' Kwargs: {kwargs}")
+                # Возвращаем шаблон без форматирования, чтобы хоть что-то показать, но с логом ошибки
                 return text_template
+        else:
+            # Случай, когда ключ есть в TRANSLATIONS, но нет перевода ни на запрошенный язык, ни на язык по умолчанию
+            logging.warning(f"Localization: Ключ '{key}' найден, но отсутствует перевод как для '{effective_lang_code}', так и для языка по умолчанию '{DEFAULT_LANGUAGE}'.")
 
-    logging.warning(f"Localization: Ключ '{key}' не найден в переводах или для языка '{effective_lang_code}'.")
-    error_placeholder = f"<L10N_ERROR: {key}_FOR_{effective_lang_code}>"
+    else:
+        logging.warning(f"Localization: Ключ '{key}' не найден в словаре TRANSLATIONS.")
+
+    # Плейсхолдер, если ключ не найден или нет перевода
+    # Используем html.escape для безопасности, если это будет рендериться как HTML
+    # import html
+    # error_placeholder = html.escape(f"[L10N_ERROR: Key '{key}' for lang '{effective_lang_code}' not found]")
+    error_placeholder = f"<L10N_ERROR: {key}_FOR_{effective_lang_code}>" # Оставляем твой вариант, если HTML не критичен здесь
     return error_placeholder
