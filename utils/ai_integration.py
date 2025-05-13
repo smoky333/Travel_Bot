@@ -14,7 +14,7 @@ if GEMINI_API_KEY:
         logging.info("AI Integration: Gemini API Key успешно сконфигурирован.")
     except Exception as e:
         logging.error(f"AI Integration: Ошибка при конфигурации Gemini API ключа: {e}", exc_info=True)
-        GEMINI_API_KEY = None
+        GEMINI_API_KEY = None  # Устанавливаем в None, чтобы последующие вызовы не пытались использовать невалидный ключ
 else:
     logging.warning("AI Integration: GEMINI_API_KEY не найден в переменных окружения. API Gemini не будет работать.")
 
@@ -26,20 +26,25 @@ def _prepare_user_data_for_prompt(user_data_raw: Dict[str, Any]) -> Dict[str, An
     prepared_data: Dict[str, Any] = {}
 
     location_value = "не указано"
-    if user_data_raw.get('user_location_geo'):
-        lat, lon = user_data_raw['user_location_geo']
+    user_location_geo = user_data_raw.get('user_location_geo')
+    user_location_text = user_data_raw.get('user_location_text')
+
+    if user_location_geo and isinstance(user_location_geo, list) and len(user_location_geo) == 2:
+        lat, lon = user_location_geo
         location_value = f"координаты: {lat},{lon}"
-    elif user_data_raw.get('user_location_text'):
-        location_value = user_data_raw.get('user_location_text')
+    elif user_location_text and isinstance(user_location_text, str) and user_location_text.strip():
+        location_value = user_location_text
     prepared_data['user_location'] = location_value
 
     interests_list: List[str] = []
-    if user_data_raw.get('user_interests_text'):
-        interests_list = [i.strip() for i in user_data_raw['user_interests_text'].split(',') if i.strip()]
+    user_interests_text = user_data_raw.get('user_interests_text')
+    if user_interests_text and isinstance(user_interests_text, str) and user_interests_text.strip():
+        interests_list = [i.strip() for i in user_interests_text.split(',') if i.strip()]
 
     prepared_data['user_preferences'] = {
         "interests": interests_list,
-        "budget": user_data_raw.get('user_budget', "mid"),
+        "budget": user_data_raw.get('user_budget', "mid"),  # mid как дефолт если не указан
+        # Добавляем проверку типов для остальных полей, если они могут быть не строками/списками
         "dietary_restrictions": user_data_raw.get('user_dietary_restrictions', []),
         "accessibility_needs": user_data_raw.get('user_accessibility_needs', []),
         "preferred_pace": user_data_raw.get('user_preferred_pace', "moderate"),
@@ -48,23 +53,50 @@ def _prepare_user_data_for_prompt(user_data_raw: Dict[str, Any]) -> Dict[str, An
     prepared_data['trip_duration_text'] = user_data_raw.get('user_trip_dates_text', "не указано")
 
     transport_list: List[str] = []
-    if user_data_raw.get('user_transport_prefs_text'):
-        transport_list = [t.strip() for t in user_data_raw['user_transport_prefs_text'].split(',') if t.strip()]
+    user_transport_prefs_text = user_data_raw.get('user_transport_prefs_text')
+    if user_transport_prefs_text and isinstance(user_transport_prefs_text, str) and user_transport_prefs_text.strip():
+        transport_list = [t.strip() for t in user_transport_prefs_text.split(',') if t.strip()]
     prepared_data['transport_preferences'] = transport_list
 
-    prepared_data['user_language'] = user_data_raw.get('user_language', 'ru')
+    prepared_data['user_language'] = user_data_raw.get('user_language', 'ru')  # Дефолт 'ru'
+
+    # --- Новое/уточненное для "еще рекомендаций" ---
+    prepared_data['request_type'] = user_data_raw.get('request_type', 'initial')
+
+    # previously_shown_ids используется в промпте, поэтому формируем его здесь
+    if prepared_data['request_type'] == 'more_options':
+        previously_shown_ids_value = user_data_raw.get('current_session_shown_ids', [])
+        # Убедимся, что это список строк (ID)
+        if isinstance(previously_shown_ids_value, list):
+            prepared_data['previously_shown_ids'] = [str(item_id) for item_id in previously_shown_ids_value if
+                                                     isinstance(item_id, (str, int))]
+        else:
+            prepared_data['previously_shown_ids'] = []
+            logging.warning(
+                f"AI Integration: current_session_shown_ids имеет неверный тип: {type(previously_shown_ids_value)}")
+    else:
+        prepared_data['previously_shown_ids'] = []
+    # --- Конец нового/уточненного ---
 
     history_for_ai = []
     liked_ids = user_data_raw.get('liked_recommendation_ids', [])
     if liked_ids and isinstance(liked_ids, list):
-        history_for_ai.append({"type": "user_feedback_positive", "item_ids": liked_ids})
+        # Убедимся, что ID в истории это строки
+        string_liked_ids = [str(item_id) for item_id in liked_ids if isinstance(item_id, (str, int))]
+        if string_liked_ids:
+            history_for_ai.append({"type": "user_feedback_positive", "item_ids": string_liked_ids})
 
     disliked_ids = user_data_raw.get('disliked_recommendation_ids', [])
     if disliked_ids and isinstance(disliked_ids, list):
-        history_for_ai.append({"type": "user_feedback_negative", "item_ids": disliked_ids})
+        string_disliked_ids = [str(item_id) for item_id in disliked_ids if isinstance(item_id, (str, int))]
+        if string_disliked_ids:
+            history_for_ai.append({"type": "user_feedback_negative", "item_ids": string_disliked_ids})
 
     prepared_data['history'] = history_for_ai
 
+    # Используем json.dumps для отладки, чтобы видеть строки как есть, без одинарных кавычек Python
+    logging.debug(
+        f"AI Integration: Подготовленные данные для промпта: {json.dumps(prepared_data, ensure_ascii=False, indent=2)}")
     return prepared_data
 
 
@@ -75,11 +107,9 @@ async def get_travel_recommendations(
         logging.error("AI Integration: API ключ для Gemini не настроен или невалиден.")
         return None, "Ошибка конфигурации: API ключ для AI не найден или не работает. Проверьте настройки."
 
-    logging.info(f"AI Integration: Получены сырые данные от пользователя: {user_data_raw}")
+    logging.info(
+        f"AI Integration: Получены сырые данные от пользователя для get_travel_recommendations: {user_data_raw}")
     prepared = _prepare_user_data_for_prompt(user_data_raw)
-
-    # Для детальной отладки подготовленных данных
-    # logging.info(f"AI Integration: Prepared data for prompt: {json.dumps(prepared, ensure_ascii=False, indent=2)}")
 
     prompt_template = f"""<role>
 Ты — «Travel Bot», высококлассный AI-ассистент для путешественников. Твоя главная цель — предоставлять персонализированные, полезные и вдохновляющие рекомендации. 
@@ -107,6 +137,14 @@ async def get_travel_recommendations(
 7.  **УЧЕТ ИСТОРИИ ПОЛЬЗОВАТЕЛЯ (`history`)**:
     *   Если в `history` есть записи с `type: "user_feedback_negative"`, **КАТЕГОРИЧЕСКИ ИЗБЕГАЙ** предложений рекомендаций с `id` из списка `item_ids` этого фидбека.
     *   Если в `history` есть записи с `type: "user_feedback_positive"`, рассматривай `item_ids` как примеры того, что нравится пользователю. Постарайся предложить НОВЫЕ, но ПОХОЖИЕ по духу/типу/ценовой категории рекомендации. **Не предлагай те же самые ID повторно, если только нет других подходящих вариантов.**
+8.  **ОБРАБОТКА ТИПА ЗАПРОСА (`request_type` и `previously_shown_ids`):**
+    *   Если `request_type` равен `"initial"`, генерируй первоначальный набор рекомендаций.
+    *   Если `request_type` равен `"more_options"`, это запрос на ДОПОЛНИТЕЛЬНЫЕ рекомендации. В этом случае:
+        *   **АБСОЛЮТНО НЕОБХОДИМО ИСКЛЮЧИТЬ И НЕ ПОВТОРЯТЬ** рекомендации с идентификаторами (`id`), которые уже были показаны пользователю и перечислены в поле `previously_shown_ids`. Это строгое требование. Предлагай только СОВЕРШЕННО НОВЫЕ ID.
+        *   Если ты не можешь найти достаточно новых релевантных вариантов, лучше верни меньше рекомендаций или даже пустой список `recommendations` (т.е. `[]`), чем повторять уже показанные ID.
+        *   Старайся предложить НОВЫЕ варианты, которые дополняют или расширяют предыдущие предложения, но соответствуют интересам и предпочтениям пользователя.
+        *   Учитывай `history` (лайки/дизлайки) как обычно.
+    *   Если `previously_shown_ids` пуст, даже при `request_type: "more_options"`, веди себя как при `initial`.
 
 ### Входные данные от пользователя (АНАЛИЗИРУЙ ИХ ВНИМАТЕЛЬНО)
 user_location: "{prepared['user_location']}"
@@ -115,9 +153,10 @@ trip_duration_text: "{prepared['trip_duration_text']}"
 transport_preferences: {json.dumps(prepared['transport_preferences'], ensure_ascii=False)}
 history: {json.dumps(prepared['history'], ensure_ascii=False)} 
 user_language: "{prepared['user_language']}"
+request_type: "{prepared['request_type']}"
+previously_shown_ids: {json.dumps(prepared['previously_shown_ids'], ensure_ascii=False)}
 
 ### ДЕТАЛЬНАЯ СПЕЦИФИКАЦИЯ для JSON объекта в "structured_recommendations"
-
 #### 1. Поле `query_summary` (JSON объект):
 - `"location_interpreted"`: Строка. Город/регион, который ты определил (на языке `user_language`).
 - `"trip_days"`: Строка. Примерное количество дней (например, "3 дня") или JSON `null`.
@@ -194,41 +233,41 @@ user_language: "{prepared['user_language']}"
   "textual_summary": "Для вашей поездки в Париж, предлагаю вам окунуться в роскошь отеля Le Bristol и исследовать очаровательные улочки Монмартра. Это сочетание элегантности и парижского шарма сделает ваше путешествие незабываемым. Рекомендую проверить часы работы достопримечательностей перед посещением."
 }}
 """
+    # Раскомментируйте для детальной отладки самого промпта перед отправкой
     # logging.info(f"AI Integration DEBUG PROMPT:\n{prompt_template}")
 
     try:
-        model = genai.GenerativeModel(model_name='gemini-1.5-flash-latest')
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-flash-latest')  # Используем более новую модель, если доступна
         logging.info("AI Integration: Отправка запроса к Gemini...")
-
-        # Для более сложных настроек генерации (если понадобятся):
-        # generation_config = genai.types.GenerationConfig(
-        #     temperature=0.7, # Контролирует случайность. Меньше = более предсказуемо.
-        #     # max_output_tokens=4096, # Ограничение на длину ответа
-        #     # response_mime_type="application/json" # Если API это поддерживает напрямую
-        # )
-        # response = await model.generate_content_async(prompt_template, generation_config=generation_config)
 
         response = await model.generate_content_async(prompt_template)
 
         ai_text = ''
-        if hasattr(response, 'text') and response.text:
-            ai_text = response.text
-        elif hasattr(response, 'parts') and response.parts:
-            for part in response.parts:
-                ai_text += getattr(part, 'text', '')
-        elif hasattr(response, 'candidates') and response.candidates:
-            try:
-                if response.candidates[0].content.parts:
-                    ai_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text'))
-            except (AttributeError, IndexError, TypeError):
-                logging.warning("AI Integration: Не удалось извлечь текст из response.candidates.")
+        # Улучшенная логика извлечения текста из ответа Gemini
+        try:
+            if hasattr(response, 'text') and response.text:
+                ai_text = response.text
+            elif hasattr(response,
+                         'parts') and response.parts:  # Для некоторых моделей ответ может быть в response.parts
+                ai_text = "".join(part.text for part in response.parts if hasattr(part, 'text'))
+            elif hasattr(response, 'candidates') and response.candidates and \
+                    response.candidates[0].content and response.candidates[0].content.parts:
+                ai_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text'))
+            else:  # Попытка извлечь из более глубокой структуры, если предыдущие не сработали
+                ai_text = response.candidates[0].content.parts[0].text
+        except (AttributeError, IndexError, TypeError) as e_extract:
+            logging.warning(
+                f"AI Integration: Не удалось стандартными способами извлечь текст из ответа Gemini. Ошибка: {e_extract}. Сырой ответ: {response}")
+            # Если ничего не извлеклось, ai_text останется пустым
 
-        if not ai_text:
+        if not ai_text:  # Проверка после всех попыток извлечения
             logging.error(
                 f"AI Integration: Ответ Gemini пустой или не содержит извлекаемого текста. Сырой ответ: {response}")
             return None, "AI не смог сгенерировать текстовый ответ. Пожалуйста, проверьте логи."
 
         ai_text = ai_text.strip()
+        # Очистка от Markdown JSON-обертки
         if ai_text.startswith('```json'):
             ai_text = ai_text[len('```json'):].strip()
         if ai_text.endswith('```'):
@@ -244,6 +283,7 @@ user_language: "{prepared['user_language']}"
                           f"Ответ Gemini, который не удалось распарсить (первые 1000 символов):\n{ai_text[:1000]}")
             return None, f"AI вернул некорректный JSON. (Ошибка: {e})"
 
+        # Валидация основной структуры ответа
         structured = data.get('structured_recommendations')
         summary = data.get('textual_summary')
 
@@ -264,21 +304,26 @@ user_language: "{prepared['user_language']}"
                 f"AI Integration: Неверная внутренняя структура 'structured_recommendations'. query_summary: {type(query_summary_val)}, recommendations: {type(recommendations_list)}. Ответ: {structured}")
             return None, "AI вернул 'structured_recommendations' с неверной внутренней структурой."
 
-        # Дополнительная валидация каждой рекомендации в списке (опционально, но полезно)
+        if not recommendations_list:  # Если список рекомендаций пуст
+            logging.info("AI Integration: Gemini вернул пустой список 'recommendations'.")
+            # Это не ошибка, а нормальный ответ, если AI ничего не нашел.
+            # structured и summary будут возвращены, хэндлер решит, что делать.
+
+        # Опциональная дополнительная валидация каждой рекомендации
         for idx, rec_item in enumerate(recommendations_list):
             if not isinstance(rec_item, dict):
                 logging.warning(f"AI Integration: Элемент #{idx} в 'recommendations' не является словарем: {rec_item}")
-                # Можно удалить этот элемент или вернуть ошибку, в зависимости от требований
-                # пока просто логируем
+                # Можно обработать: удалить элемент, вернуть ошибку и т.д.
             else:
-                # Проверка обязательных полей, если нужно
+                # Пример проверки обязательных полей
                 if not rec_item.get("id") or not rec_item.get("type") or not rec_item.get("name"):
                     logging.warning(
-                        f"AI Integration: Элемент #{idx} в 'recommendations' не содержит обязательных полей id/type/name: {rec_item.get('id')}")
+                        f"AI Integration: Элемент #{idx} в 'recommendations' не содержит обязательных полей id/type/name: ID='{rec_item.get('id')}', Type='{rec_item.get('type')}', Name='{rec_item.get('name')}'")
 
         logging.info("AI Integration: Успешно получили и распарсили рекомендации от Gemini.")
         return structured, summary
 
     except Exception as e:
+        # Логируем с exc_info=True для полного трейсбека
         logging.error(f"AI Integration: Непредвиденная ошибка при работе с Gemini API: {e}", exc_info=True)
-        return None, f"Непредвиденная ошибка при обращении к AI: {type(e).__name__}"
+        return None, f"Непредвиденная ошибка при обращении к AI: {type(e).__name__}. Детали в логах сервера."
